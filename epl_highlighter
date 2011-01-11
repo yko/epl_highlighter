@@ -1,0 +1,249 @@
+#!/usr/bin/env perl
+# Copyright (C) 2011, Yaroslav Korshak
+
+BEGIN {
+
+    # I'm very greedy
+    $ENV{MOJO_MAX_MESSAGE_SIZE} = 40960;
+}
+
+use Mojolicious::Lite;
+use Mojolicious::Plugin::PodRenderer;
+
+# Make some checks
+if ($Mojolicious::VERSION < 1.01) {
+    die "Please, upgrade your Mojolicious. It's easy!";
+}
+eval { require Text::VimColor }
+  or die "Text::VimColor required. Please do cpanm Text::VimColor\n";
+
+no warnings;    # It's not a typo!!!
+my $MOJOBAR = $Mojolicious::Plugin::PodRenderer::MOJOBAR;
+use warnings;
+
+# Init highlighter
+my $hl = Text::VimColor->new(
+    vim_options => [
+        qw(-RXZ -i NONE -u NONE -U NONE -N -n),    # for performance
+        '+set nomodeline',                         # for performance
+    ],
+);
+
+# Inline style
+my %style = (
+    'Comment'    => 'color: #726D73;',
+    'Constant'   => 'color: #9DAA7E;',
+    'Identifier' => 'color: #889DBC;',
+    'Statement'  => 'color: #D5B57C;',
+    'PreProc'    => 'color: #A020F0',                # dunno, i'm lazy
+    'Type'       => 'color: #9DAA7E;',
+    'Special'    => 'color: #6A5ACD',                # the same
+    'Underlined' => 'text-decoration: underline;',
+    'Error' => 'color: #FFFFFF; background: #FF0000 none',
+    'Todo'  => 'color: #0000FF; background: #FFFF00 none',
+);
+
+app->secret('My secret passphrase needs to be changed!!!');
+
+sub main {
+    my $self = shift;
+
+    # Lets steal some code
+    my $bar = $self->include(inline => $MOJOBAR);
+
+    # And patch it a bit
+    $bar
+      =~ s#(<div id="mojobar-logo">.*?</div>)#$1<div id='hl'>EPL Syntax Highlighter</div>#s;
+
+    $self->content_for(mojobar => $bar);
+    $self->render('index', rendered => 0, @_);
+}
+
+get '/' => \&main => 'index';
+
+post '/' => sub {
+    my $self = shift;
+
+    # Detect filetype
+    $hl->{filetype} = join '.',
+      grep { defined $self->param($_) } qw/html epl/;
+
+    # Process via Text::VimColor
+    $hl->syntax_mark_string($self->param('code'));
+
+    # Get HTML
+    my $result = $hl->html;
+
+    # Adopt to prettify-mojo.css
+    $result =~ s/class="syn(.*?)"/'style="'.$style{$1}.'"'/eg;
+
+    return main($self, colored => $result)
+      unless $self->req->is_xhr;
+
+    $self->render_text($result);
+} => 'highlight';
+
+app->start;
+
+__DATA__
+@@ index.html.ep
+ % layout 'default';
+ % title 'Make your epl templates Mojolicious!';
+
+ %= content_for 'mojobar'; # So pretty bar. Mojo bar!
+
+ %= javascript 'js/jquery.js'
+
+ <script>
+ $( function () {
+   var last_update, timer, text;
+   var need_update = 0, in_progress = 0, lastinput = 0;
+
+   $('form').submit(function (e) {
+        e.preventDefault();
+
+        in_progress = 1;
+
+        $.ajax({
+            type: 'POST',
+            url: $(this).attr('action'),
+            data: $(this).serialize(),
+            success: function (data) {
+                $('#code').html(data).show();
+                in_progress = 0;
+                last_input = last_update = (new Date()).getTime();
+                if (need_update) {
+                    // O my... again -_-
+                    setTimeout(function () { $('form').trigger('keyup') }, 600)
+                }
+            },
+            error: function () {in_progress = 0; alert("Server error. Maybe template too big?") }
+        })
+    });
+
+    $('textarea').blur(function () {
+      if ($(this).val() == $(this).attr('default') || $(this).val() == '') {
+        $(this).val($(this).attr('default'));
+        $(this).addClass('placeholder');
+      } else {
+        $(this).removeClass('placeholder');
+      }
+    }).focus(function () {
+       if ($(this).hasClass('placeholder')) {
+        $(this).removeClass('placeholder').val('');
+       }
+    }).keyup(function () {
+       var deny = 0;
+
+       need_update++;
+
+       if ($('textarea').val() == text) { return } // Same text. Pressed Alt+Tab, etc
+       if ($('textarea').val().length < 15) { return }
+       if ($('textarea').val().length > 10240) { return } // You're sooo biiig!!!
+       else if (in_progress) { return }
+       else if (need_update == 1) { deny = "first input" }
+       else if (last_update + 2000 > (new Date()).getTime()) { deny = "last updated" }
+       else if (lastinput + 375 > (new Date()).getTime()) { deny = "fast input" }
+
+       clearTimeout(timer);
+       lastinput = (new Date()).getTime();
+
+       if (deny) {
+        timer = setTimeout(function () { $('textarea').trigger('keyup') }, 600);
+        return;
+       }
+
+       need_update = 0;
+       text = $('textarea').val(); // Cache
+       $('form').submit();
+    });
+
+    $('textarea').val($('textarea').attr('default')).addClass('placeholder');
+ });
+ </script>
+<div id='wrapper'>
+
+    <%= form_for 'highlight' => (method => 'post') => begin %>
+        <%= text_area 'code', default => "Your epl here: <\%= include 'template' \%\>" %> <br />
+        <%= check_box 'html' => 1 => checked => 'checked' %> <label for='html'>html</label>
+        <%= check_box 'epl'  => 1 => checked => 'checked' %> <label for='epl'>epl</label>
+        <%= submit_button %>
+    <% end %>
+
+    <pre id='code'><%== stash 'colored' %></pre>
+
+    <p id='powered'>This highlighter powered by
+        <%= link_to Mojolicious => 'http://mojolicio.us' %>,
+        <%= link_to vim => 'http://www.vim.org' %> and
+        <%= link_to 'mojo.vim' => 'http://www.vim.org/scripts/script.php?script_id=3168' %> syntax
+    </p>
+
+    <p id='forkme'>
+        You can get source of this tool 
+        at <%= link_to 'github' => 'https://github.com/yko/epl__highlighter' %>
+    </p>
+
+</div>
+@@ layouts/default.html.ep
+<!doctype html>
+<html>
+<head>
+ <title><%= title %></title>
+ %= base_tag
+ %= content_for 'header'
+ <style>
+    body {
+        background-color: #f5f6f8;
+        color: #333;
+        font: 0.9em Verdana, sans-serif;
+        margin: 0;
+        text-shadow: #ddd 0 1px 0;
+    }
+    a img { border: 0 none; }
+    #code {
+        background-color: #1a1a1a;
+        background: url("mojolicious-pinstripe.gif") fixed;
+        -moz-border-radius: 5px;
+        border-radius: 5px;
+        color: #eee;
+        font-family: 'Menlo', 'Monaco', Courier, monospace !important;
+        text-align: left;
+        text-shadow: #333 0 1px 0;
+        padding: 1.5em 2em;
+        white-space: pre-wrap;
+        margin: 1em 0px;
+    }
+    textarea { width: 100%; height: 150px;  }
+    textarea.placeholder { color: gray;  }
+    input[type=submit] { width: 100%; padding: 0.5em 0; margin: 1em 0;}
+    #hl { float: left; font-size: 1.2em; }
+    #wrapper {
+        background-color: #fff;
+        -moz-border-radius-bottomleft: 5px;
+        border-bottom-left-radius: 5px;
+        -moz-border-radius-bottomright: 5px;
+        border-bottom-right-radius: 5px;
+        -moz-box-shadow: 0px 0px 2px #ccc;
+        -webkit-box-shadow: 0px 0px 2px #ccc;
+        box-shadow: 0px 0px 2px #ccc;
+        margin-left: 5em;
+        margin-right: 5em;
+        padding: 7em 3em 3em 3em;
+   }
+   #footer {
+        padding-top: 1em;
+        text-align: center;
+   }
+   a { color: inherit; }
+ </style>
+</head>
+
+<body>
+ %= content
+ <div id="footer">
+    %= link_to 'http://mojolicio.us' => begin
+        <img src="mojolicious-black.png" alt="Mojolicious logo">
+    % end
+ </div>
+</body>
+</html>
