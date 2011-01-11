@@ -180,7 +180,7 @@ __DATA__
 
     <p id='forkme'>
         You can get source of this tool 
-        at <%= link_to 'github' => 'https://github.com/yko/epl__highlighter' %>
+        at <%= link_to 'github' => 'https://github.com/yko/epl_highlighter' %>
     </p>
 
 </div>
